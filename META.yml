@@ -1,0 +1,15 @@
+# http://module-build.sourceforge.net/META-spec.html
+#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
+name:         fluff
+version:      0.01
+version_from: lib/App/Fluff.pm
+installdirs:  site
+requires:
+    Data::Hash::Totals:            0
+    File::Find:                    0
+    Getopt::Long:                  0
+    List::Util:                    0
+    Test::More:                    0
+
+distribution_type: module
+generated_by: ExtUtils::MakeMaker version 6.17

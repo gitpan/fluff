@@ -1,0 +1,258 @@
+#!/usr/bin/perl -w
+
+use strict;
+use App::Fluff;
+use File::Find;
+use Data::Hash::Totals;
+use List::Util qw( max );
+use Getopt::Long;
+
+my %getopt_options = ( help => sub{ help(); exit; } );
+my %checks;
+
+for my $opt ( possible_errors() ) {
+    my $tag  = $opt->[0];
+    $getopt_options{$tag} = eval qq/ sub { \$checks{"$tag"} = 1 } /;
+}
+
+GetOptions( %getopt_options ) or exit 1;
+
+# Set all options on if none are explicitly set
+if ( !%checks ) {
+    %checks = map {($_->[0],1)} possible_errors();
+}
+
+
+my %errors;
+if ( @ARGV ) {
+    process_file($_) for @ARGV;
+} else {
+    find( {
+        wanted => \&handler,
+        preprocess => sub { sort @_ },
+    }, "." );
+}
+
+my %totals;
+my $nerrors = 0;
+for my $pe ( possible_errors() ) {
+    $totals{$pe->[1]} = 0 if $checks{ $pe->[0] };
+}
+
+for my $errstr ( sort keys %errors ) {
+    print "$errstr\n";
+    my @errors = @{$errors{$errstr}};
+    print "    $_\n" for @errors;
+    print "\n";
+    $totals{$errstr} = @errors;
+    $nerrors += @errors;
+}
+
+print as_table( \%totals );
+printf( "%4d Total\n", $nerrors );
+
+sub handler {
+    return if /~$/;
+    if ( -d ) {
+        $File::Find::prune = 1 if /\b(\.svn|CVS)\b/;
+        return;
+    }
+
+    if ( /\.(css|tt|ttml|t|pm|pl|php|phpt|html)$/ ) {
+        if ( !/\bPie\.pm$/ && !/\bfpdf\.php$/ ) { # weed out non-FLR-written
+            process_file( $_, $File::Find::name );
+        }
+    }
+    elsif ( -x $_ ) {
+        # didn't match one of our extensions above, but it is
+        # executable, so see whether it's a script.
+        open( my $fh, $_ );
+        if ( $fh ) {
+            my $line = <$fh>;
+            close $fh;
+
+            if ( $line =~ /^#!.*(ksh|php|perl)/ ) {
+                process_file( $_, $File::Find::name );
+            }
+        }
+    }
+
+    return;
+}
+
+sub process_file {
+    my $filename = shift;
+    my $displayname = shift || $filename;
+
+    return if $filename eq "fluff"; # Don't check this program
+
+    my $fh;
+    if ( !open( $fh, "<", $filename ) ) {
+        warn "Can't open $filename: $!\n";
+        return;
+    }
+    my @checks = grep { $checks{$_->[0]} } possible_errors();
+    while ( my $line = <$fh> ) {
+        for ( @checks ) {
+            my (undef,$desc,$finder) = @$_;
+
+            my $fluffy;
+            if ( ref($finder) eq "CODE" ) {
+                $fluffy = $finder->( $line, $displayname );
+            } else {
+                $fluffy = ($line =~ $finder);
+            }
+
+            if ( $fluffy ) {
+                chomp $line;
+                push( @{$errors{$desc}}, "$displayname($.): $line" );
+            }
+        } # for
+    } # while
+    close $fh;
+} # process_file()
+
+sub help {
+    print "fluff [options] [files]\n";
+
+    my @pe = possible_errors();
+    @pe = sort { $a->[0] cmp $b->[0] } @pe;
+    my $max = max map { length $_->[0] } @pe;
+
+    for my $opt ( @pe ) {
+        my ($tag,$desc) = @$opt;
+        printf( "    --%-*s  %s\n", $max, $tag, $desc );
+    }
+}
+
+sub possible_errors {
+return (
+[ xxx =>
+    "XXXed things to be addressed later" =>
+    qr/\bXXX\b/
+],
+[ todo =>
+    "TODOed things to be addressed later" =>
+    qr/TODO/
+],
+[ review =>
+    "REVIEWed things to be addressed later" =>
+    qr/\bREVIEW\b/
+],
+[ no_plan =>
+    "no_plan" =>
+    qr/\bno_plan\b/
+],
+[ commented =>
+    "Commented-out code" =>
+    qr/^\s*(#|\/\/).*\$[A-Za-z_].*=/
+],
+[ 'return-undef' =>
+    "Returning undef" =>
+    qr/return[\s(]+undef/
+],
+[ data =>
+    'Variables called "data"' =>
+    qr/[\$\%\@]data\d*\b/
+],
+[ pathing =>
+    'Up-n-over pathing' =>
+    qr/\.\.\//
+],
+[ 'ref-proto' =>
+    'ref proto || proto' =>
+    qr/ref\b.+\$\w+.*\|\|.*\$\w+/
+],
+[ 'mech-ok' =>
+    'Using ok() for mech content instead of $mech->content_like' =>
+    qr/^\s*ok.*>content/
+],
+[ croak =>
+    'Croak, should probably be an assertion' =>
+    qr/croak\(/
+],
+[ dumper =>
+    'Data dumper diagnostics' =>
+    qr/warn\s+Dumper/
+],
+[ ttml =>
+    'Calling TT process on a .tt file (not .ttml)' =>
+    qr/process\(.*\.tt[^m]/
+],
+[ 'array-iterator' =>
+    'using Array::Iterator' =>
+    qr/Array::Iterator/
+],
+[ 'if-else-format' =>
+    'if/then/else bracing incorrect' =>
+    sub {
+        return 1 if $_[0] =~ /\belse\b\s*{.+}/;
+        return 1 if $_[0] =~ /\b(if|else?if)\b\s*\(.+\)\s*{.+}/;
+        return 1 if $_[0] =~ /^\s*if\s*\(.+\)\s*[^)]+;$/;
+        return;
+    }
+],
+[ cgi =>
+    'using CGI.pm' =>
+    qr/use CGI[^:]/
+],
+[ 'isa' =>
+    'using ISA instead of "use base"' =>
+    qr/\@ISA/
+],
+[ 'regex-strings' =>
+    'Using a string in a regex' =>
+    qr/qr\/\$/
+],
+[ 'mech-get' =>
+    'Using get() instead of get_ok()' =>
+    sub {
+        return 1 if $_[0] =~ /\$(ua|agent)->get\(/ && ($_[1] =~ /\.t$/ );
+    }
+],
+[ ref =>
+    'ref: should be using isa instead' =>
+    sub { return 1 if $_[0] =~ /\bref\b/ && $_[1] =~ /\.(pl|pm|t)$/ }
+],
+[ tie =>
+    'Using any Tie:: modules' =>
+    qr/Tie::/
+],
+[ 'cuddled-else' =>
+    'Cuddled else' =>
+    qr/ } \s* els(e|if) /x
+],
+[ 'use-vars' =>
+    'Using "use vars" instead of "our"' =>
+    qr/ \b use \s+ vars \b /x
+],
+[ 'ksh' =>
+    'use of Korn shell' =>
+    qr/^#!.*ksh/
+],
+[ 'size-quotes' =>
+    'Not using quotes around numeric size parameters' =>
+    qr/<[^>]*[^,](height|width)=\d+[^,]/x
+],
+[ tabs =>
+    'Embedded tabs in source' =>
+    sub { return 1 if $_[0] =~ /\t/ && $_[1] =~ /\.(pl|pm|t|php|phpt)$/ }
+],
+[ 'mailto' =>
+    'mailto: without an address' =>
+    qr/mailto:"/
+],
+[ 'skip_all' =>
+    'Tests skipped in their entirety' =>
+    qr/\bskip_all\b/
+],
+[ 'one-test' =>
+    'One test in the test file' =>
+    qr/tests.*=>\s*1;/
+],
+[ 'datetime-utc' =>
+    'DateTime->now called without setting time zone' =>
+    qr/Time->now(->|\(\))/
+],
+);
+}
